@@ -34,9 +34,10 @@ venv/
 # Reports / generated docs (keep originals out of code commits)
 *_v[0-9]*.docx
 
-# Pipe / socket files that occasionally show up
+# Pipe / socket files that gpiozero/lgpio occasionally drops
 .lgd-nfy*
 
-# One-shot recovery / migration helpers (not part of the project)
-_recover_from_transcript.py
-source
+# Backup / scratch files
+*.bak
+*.orig
+*~

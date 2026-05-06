@@ -1,7 +1,7 @@
 # Sage — Handheld Local-First AI Assistant
 
 A privacy-focused voice assistant running on a Raspberry Pi 5 with optional
-cloud "deep-think" mode.
+cloud "deep-think" mode using groq.
 
 ## What it does
 
@@ -22,7 +22,7 @@ cloud "deep-think" mode.
 - WS2812 12-LED NeoPixel ring (planned, on SPI MOSI / GPIO 10)
 - DS-213K buttons (planned, GPIO inputs for the deep-think toggle)
 - USB microphone (C-Media PCM2902, USB 1.1)
-- 3.5" or 5" DSI touchscreen
+- 5" DSI touchscreen
 - AB13X USB audio dongle + PAM8403 amp + 40 mm speaker (planned, replaces HDMI audio for portable use)
 
 ## Project layout
