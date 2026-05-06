@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import json
 import math
 import os
 import queue
@@ -329,7 +330,12 @@ class SharedState:
 
 
 shared = SharedState()
-audio_q: "queue.Queue[np.ndarray]" = queue.Queue()
+# Bounded with drop-oldest so the queue can never grow without bound, even
+# if the worker is stuck inside a long blocking call (model load, slow LLM
+# turn, hung HTTP). 300 frames * 30 ms = 9 seconds — comfortably more than
+# any single utterance, but small enough that recovery from a wedged turn
+# is bounded to ~9 s of audio backlog instead of unbounded growth.
+audio_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=300)
 # Small bounded queue feeding the dedicated wake-word listener thread.
 # Capacity ~= 15 * 30 ms = 450 ms — barge-in only cares about the most
 # recent half-second of audio, so on overflow we drop the OLDEST frame
@@ -495,14 +501,25 @@ def _prewarm_ollama() -> None:
 
 
 def _ollama_chat(messages: list[dict]) -> dict:
-    """Single round-trip to local Ollama. Returns the parsed `message` dict."""
+    """Streamed round-trip to local Ollama. Returns the parsed `message` dict.
+
+    Streaming buys cooperative cancellation: between every chunk (~50-200 ms
+    on the Pi) we check barge_event, and bail out the moment the user has
+    interrupted. Without this, a wake-word during THINKING still has to
+    wait for the entire 220-token reply to generate before the worker
+    notices — which can be 20-30 s on qwen2.5:1.5b, during which audio_q
+    fills up and the system feels frozen.
+
+    On cancel we close the response and raise RequestException; ask_ollama's
+    error path takes it from there.
+    """
     r = requests.post(
         OLLAMA_URL,
         json={
             "model": OLLAMA_MODEL,
             "messages": messages,
             "tools": tools.OLLAMA_TOOL_SCHEMAS,
-            "stream": False,
+            "stream": True,
             # 1h keep-alive: keeps the model resident across long idle gaps
             # so we don't pay the ~15-30 s cold-load penalty on every "first
             # question after a coffee break".
@@ -513,9 +530,42 @@ def _ollama_chat(messages: list[dict]) -> dict:
             "options": {"num_predict": 220, "num_thread": 2},
         },
         timeout=90,
+        stream=True,
     )
     r.raise_for_status()
-    return r.json()["message"]
+
+    role = "assistant"
+    content_parts: list[str] = []
+    tool_calls: list[dict] = []
+    try:
+        for line in r.iter_lines():
+            if not line:
+                continue
+            if barge_event.is_set():
+                print("[llm] cancelled mid-stream (barge-in)", file=sys.stderr)
+                raise requests.RequestException("cancelled by barge-in")
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = chunk.get("message") or {}
+            if msg.get("role"):
+                role = msg["role"]
+            piece = msg.get("content")
+            if piece:
+                content_parts.append(piece)
+            calls = msg.get("tool_calls") or chunk.get("tool_calls")
+            if calls:
+                tool_calls.extend(calls)
+            if chunk.get("done"):
+                break
+    finally:
+        r.close()
+
+    out: dict = {"role": role, "content": "".join(content_parts)}
+    if tool_calls:
+        out["tool_calls"] = tool_calls
+    return out
 
 
 def _chat(messages: list[dict]) -> tuple[dict, str]:
@@ -953,7 +1003,10 @@ def audio_callback(indata, frames, time_info, status) -> None:
     state = shared.state
     frame = mono_16k.copy()
     if state in (State.IDLE, State.LISTENING):
-        audio_q.put(frame)
+        # Drop-oldest semantics on overflow: the audio thread must NEVER
+        # block (PortAudio would kill the stream). If the worker is stuck,
+        # we keep the most recent ~9 s of audio and let the older stuff go.
+        _push_drop_oldest(audio_q, frame)
     _push_drop_oldest(wake_q, frame)
 
     with audio_diag_lock:
