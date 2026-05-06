@@ -85,6 +85,7 @@ import openwakeword  # noqa: E402
 from openwakeword import Model as OWWModel  # noqa: E402
 
 import cloud  # noqa: E402  # Groq adapter for online / deep-think mode
+import hardware  # noqa: E402  # servo + LED ring singletons
 import memory  # noqa: E402  # local SQLite-backed long-term memory
 import tools  # noqa: E402  # local tool definitions for LLM function calls
 
@@ -1197,6 +1198,147 @@ def wake_listener_loop() -> None:
         oww.reset()
 
 
+# --- ambient servo "personality" -------------------------------------------
+# Drives the SG90 from the UI state so the device looks alive without the
+# LLM having to call gesture tools on every turn. LLM-initiated gestures
+# (e.g. user said "wave hello") still take priority — we only fire ambient
+# motion when servo.is_busy is False, so a tool call already in flight
+# isn't preempted.
+
+def ambient_servo_loop() -> None:
+    """Background loop: small servo motions tied to UI state changes.
+
+    Cadence per state:
+      IDLE        - random twitch every 20-45 s ("looking around")
+      LISTENING   - one quick perk-up on entry from IDLE
+      THINKING    - small slow nod every ~1.5 s while waiting on the LLM
+      SPEAKING    - subtle wobble every ~3 s during TTS playback
+      TRANSCRIBING- nothing (too brief to matter)
+    """
+    servo = hardware.get_servo()
+    if not servo.available:
+        print(
+            "[ambient] servo not available; ambient motion disabled",
+            file=sys.stderr,
+        )
+        return
+
+    import random
+    last_state: State | None = None
+    next_action_at = time.monotonic() + random.uniform(15.0, 30.0)
+
+    while True:
+        time.sleep(0.4)
+        state = shared.state
+        now = time.monotonic()
+
+        # Ignore states we don't drive — but still update last_state so the
+        # next "transition into" logic fires correctly when we resume.
+        if state in (State.TRANSCRIBING,):
+            last_state = state
+            continue
+
+        # Don't preempt an in-flight LLM tool call (e.g. "wave hello").
+        # We just check again on the next tick.
+        if servo.is_busy:
+            last_state = state
+            continue
+
+        if state == State.IDLE:
+            if now >= next_action_at:
+                servo.twitch()
+                next_action_at = now + random.uniform(20.0, 45.0)
+
+        elif state == State.LISTENING:
+            # Snap toward the user once when we enter LISTENING.
+            if last_state != State.LISTENING:
+                servo.set_angle(random.uniform(-12.0, 12.0))
+                next_action_at = now + 5.0
+
+        elif state == State.THINKING:
+            if now >= next_action_at:
+                servo.nod(1)
+                next_action_at = now + 1.6
+
+        elif state == State.SPEAKING:
+            if now >= next_action_at:
+                base = servo.current_angle
+                servo.set_angle(base + random.uniform(-7.0, 7.0))
+                next_action_at = now + random.uniform(2.5, 4.0)
+
+        last_state = state
+
+
+# --- physical buttons (DS-213K tactile switches) ---------------------------
+# Two buttons wired GPIO-to-GND with internal pull-up:
+#   GPIO 23 (pin 16) - toggle online (Groq deep-think) mode
+#   GPIO 24 (pin 18) - cancel/stop (manual barge-in: kills speech, drops
+#                      the in-flight LLM/Whisper request, returns to IDLE)
+# Wire one leg of each switch to the listed GPIO, the other leg to any
+# GND pin (e.g. physical pin 14 or 20). No external resistors needed.
+BUTTON_ONLINE_GPIO = 23
+BUTTON_CANCEL_GPIO = 24
+
+
+def _btn_toggle_online() -> None:
+    new_state = shared.toggle_online()
+    print(f"[button] online -> {new_state}", file=sys.stderr)
+
+
+def _btn_cancel() -> None:
+    state = shared.state
+    if state in (State.SPEAKING, State.THINKING, State.TRANSCRIBING):
+        print(f"[button] cancel pressed during {state.name}", file=sys.stderr)
+        barge_event.set()
+        stop_speaking()
+        shared.set_state(State.IDLE)
+    else:
+        # In IDLE/LISTENING the cancel button just centers the servo and
+        # clears any leftover follow-up window — useful as a "reset".
+        print("[button] cancel pressed (idle reset)", file=sys.stderr)
+        try:
+            hardware.get_servo().center()
+        except Exception:
+            pass
+
+
+def setup_buttons() -> None:
+    """Initialize the two GPIO push-buttons. Silently no-op if gpiozero is
+    unavailable or the pins fail to claim (e.g. another process owns them).
+    """
+    try:
+        from gpiozero import Button
+    except Exception as e:
+        print(f"[buttons] gpiozero not available: {e}", file=sys.stderr)
+        return
+
+    try:
+        b_online = Button(BUTTON_ONLINE_GPIO, pull_up=True, bounce_time=0.05)
+        b_cancel = Button(BUTTON_CANCEL_GPIO, pull_up=True, bounce_time=0.05)
+    except Exception as e:
+        print(
+            f"[buttons] failed to claim GPIO{BUTTON_ONLINE_GPIO}/"
+            f"{BUTTON_CANCEL_GPIO}: {e}",
+            file=sys.stderr,
+        )
+        return
+
+    b_online.when_pressed = _btn_toggle_online
+    b_cancel.when_pressed = _btn_cancel
+    # Hold references so gpiozero's GC doesn't reap them — losing the
+    # reference disables the callbacks silently.
+    global _buttons
+    _buttons = (b_online, b_cancel)
+    print(
+        f"[buttons] online=GPIO{BUTTON_ONLINE_GPIO} "
+        f"cancel=GPIO{BUTTON_CANCEL_GPIO}",
+        file=sys.stderr,
+    )
+
+
+_buttons: tuple = ()  # keepalive references
+
+
 def _processing_iteration() -> None:
     oww, oww_key = load_wake_model()
     vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
@@ -1630,15 +1772,22 @@ def main() -> None:
     )
     wake_listener.start()
 
-    # NOTE: _prewarm_ollama() intentionally NOT called. On the C-Media
-    # USB 1.1 mic the 4-5s of bursty CPU during model load silently
-    # kills the audio stream (PortAudio reports active=True but no
-    # callbacks fire again). Pay the cold-load penalty on the first user
-    # query instead, when any stream death at least coincides with the
-    # THINKING phase (user isn't talking). The right long-term fix is
-    # to pin Ollama to cores 1-3 via `sudo systemctl edit ollama` with
-    # CPUAffinity=1 2 3 — once that's in place, this thread is safe to
-    # uncomment.
+    # Prewarm Ollama in the background so the first user query doesn't pay
+    # a 15-30s cold-load penalty. Safe to do now that ollama is pinned to
+    # cores 1-3 via systemd CPUAffinity (see /etc/systemd/system/ollama.
+    # service.d/cpuaffinity.conf) — core 0 stays free for the audio thread
+    # so model load no longer starves the USB mic.
+    threading.Thread(target=_prewarm_ollama, daemon=True, name="prewarm").start()
+
+    # Ambient servo motion driven by UI state. Silently no-ops if the servo
+    # isn't available (e.g. PWM overlay missing or running on a dev box).
+    threading.Thread(
+        target=ambient_servo_loop, daemon=True, name="ambient-servo"
+    ).start()
+
+    # Physical buttons (online toggle + cancel). Also silently no-ops if
+    # the GPIO pins can't be claimed.
+    setup_buttons()
 
     def watchdog() -> None:
         """Audio-stream liveness check + occasional heartbeat.

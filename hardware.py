@@ -97,6 +97,17 @@ class Servo:
     def current_angle(self) -> float:
         return self._current_angle
 
+    @property
+    def is_busy(self) -> bool:
+        """True iff a queued action is currently executing.
+
+        Cheap to call. Used by the ambient-gesture loop to avoid stomping
+        on an in-flight LLM tool call (e.g. user said 'wave hello' and the
+        wave is still mid-motion).
+        """
+        t = self._thread
+        return t is not None and t.is_alive()
+
     # ---- low-level ------------------------------------------------------
 
     def _set(self, angle: float) -> None:
