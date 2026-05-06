@@ -1,0 +1,42 @@
+# Secrets
+.env
+
+# Local model files / build artifacts
+vendor/
+voices/
+*.onnx
+*.tflite
+
+# SQLite databases (local memory)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Cursor / agent local state
+.cursor/
+
+# Reports / generated docs (keep originals out of code commits)
+*_v[0-9]*.docx
+
+# Pipe / socket files that occasionally show up
+.lgd-nfy*
+
+# One-shot recovery / migration helpers (not part of the project)
+_recover_from_transcript.py
+source
