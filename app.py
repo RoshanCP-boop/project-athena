@@ -790,7 +790,14 @@ def speak(text: str) -> None:
     finally:
         # Drain audio captured while we were speaking — those frames are
         # mostly silence (or our own voice) and are no longer relevant.
-        _drain_queue()
+        # EXCEPT during a barge-in: the user is mid-sentence ("hey jarvis,
+        # what's the time?") and the back half of their utterance is
+        # currently sitting in audio_q waiting to be transcribed. Dropping
+        # it here is what makes the UI flash 'listening' but never hear
+        # anything. Leave the queue alone; the next iteration will consume
+        # the user's continuation.
+        if not barge_event.is_set():
+            _drain_queue()
 
 
 def _ensure_conversation() -> int:
@@ -1181,6 +1188,10 @@ def _processing_iteration() -> None:
                 last_wake_at = now
                 shared.add_message("jarvis", "Yes?")
                 shared.extend_follow_up()
+                # Cold wake — wipe any leftover barge_event from a prior
+                # interrupted reply that never produced a continuation.
+                # (Otherwise drains stay disabled and audio_q grows.)
+                barge_event.clear()
                 # Drop everything still in flight and reset the wake model
                 # so the same audio frames can't double-trigger.
                 oww.reset()
@@ -1241,7 +1252,11 @@ def _processing_iteration() -> None:
                 # — its internal buffer would otherwise still hold the most
                 # recent ~3 s of audio and could spuriously fire next loop.
                 oww.reset()
-                _drain_queue()
+                # Same exception as in speak(): if a barge-in was triggered
+                # mid-reply, the user's continuation utterance is in
+                # audio_q right now. Don't blow it away.
+                if not barge_event.is_set():
+                    _drain_queue()
 
 
 def _handle_complete_utterance(
