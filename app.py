@@ -347,6 +347,47 @@ wake_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=15)
 # calls (transcribe -> ask_ollama -> speak) and bails out so we don't
 # speak a reply the user has already abandoned.
 barge_event = threading.Event()
+
+# In-flight HTTP requests to local services (whisper-server, Ollama). The
+# wake_listener thread calls cancel_inflight_http() on barge-in to forcibly
+# close the open socket — that unblocks the worker's iter_lines() / read()
+# immediately with a ConnectionError instead of waiting for the next chunk
+# (which can be 30+ seconds during slow Ollama inference). Without this,
+# barge-in worked in name only: state flipped to IDLE but the worker stayed
+# blocked, audio_q saturated, and the system felt frozen for ~minute.
+_inflight_responses_lock = threading.Lock()
+_inflight_responses: list[requests.Response] = []
+
+
+def _register_inflight(r: requests.Response) -> None:
+    with _inflight_responses_lock:
+        _inflight_responses.append(r)
+
+
+def _unregister_inflight(r: requests.Response) -> None:
+    with _inflight_responses_lock:
+        try:
+            _inflight_responses.remove(r)
+        except ValueError:
+            pass
+
+
+def cancel_inflight_http() -> None:
+    """Force-close any in-flight requests to local STT / LLM services.
+
+    Idempotent and safe to call from any thread. The .close() shoves the
+    underlying socket shut, which causes any blocked read in the worker
+    thread to raise. Errors during close are swallowed — the worst case
+    is the response gets garbage-collected normally a moment later.
+    """
+    with _inflight_responses_lock:
+        victims = list(_inflight_responses)
+        _inflight_responses.clear()
+    for r in victims:
+        try:
+            r.close()
+        except Exception:
+            pass
 llm_history: list[dict] = []
 
 # --- audio pipeline diagnostics (updated by audio_callback, read by watchdog)
@@ -438,6 +479,7 @@ def transcribe(samples: np.ndarray) -> str:
 
     duration_s = len(samples) / VAD_RATE
     t0 = time.time()
+    r = None
     try:
         r = requests.post(
             WHISPER_URL,
@@ -448,7 +490,9 @@ def transcribe(samples: np.ndarray) -> str:
                 "prompt": prompt,
             },
             timeout=30,
+            stream=True,
         )
+        _register_inflight(r)
         r.raise_for_status()
         text = r.json().get("text", "").strip()
         print(
@@ -463,6 +507,13 @@ def transcribe(samples: np.ndarray) -> str:
             file=sys.stderr,
         )
         return ""
+    finally:
+        if r is not None:
+            _unregister_inflight(r)
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 MAX_TOOL_ITERATIONS = 4
@@ -530,21 +581,29 @@ def _ollama_chat(messages: list[dict]) -> dict:
             # thread gets starved during inference and the watchdog trips.
             "options": {"num_predict": 220, "num_thread": 2},
         },
-        timeout=90,
+        # 45s ceiling. qwen2.5:1.5b on Pi 5 produces tokens in <500ms each,
+        # so a healthy 220-token reply finishes in ~10-20s. If we're past
+        # 45s something is wrong (model thrashing, ollama wedged) and we'd
+        # rather error fast than have the user staring at THINKING forever.
+        timeout=(5, 45),
         stream=True,
     )
     r.raise_for_status()
+    _register_inflight(r)
 
     role = "assistant"
     content_parts: list[str] = []
     tool_calls: list[dict] = []
     try:
         for line in r.iter_lines():
-            if not line:
-                continue
+            # Either a barge from the wake_listener (which also called
+            # cancel_inflight_http() to wake us up out of iter_lines)
+            # or a stale flag — either way, abort.
             if barge_event.is_set():
                 print("[llm] cancelled mid-stream (barge-in)", file=sys.stderr)
                 raise requests.RequestException("cancelled by barge-in")
+            if not line:
+                continue
             try:
                 chunk = json.loads(line)
             except json.JSONDecodeError:
@@ -561,7 +620,11 @@ def _ollama_chat(messages: list[dict]) -> dict:
             if chunk.get("done"):
                 break
     finally:
-        r.close()
+        _unregister_inflight(r)
+        try:
+            r.close()
+        except Exception:
+            pass
 
     out: dict = {"role": role, "content": "".join(content_parts)}
     if tool_calls:
@@ -1192,6 +1255,11 @@ def wake_listener_loop() -> None:
         # waiting on. Only matters for THINKING / TRANSCRIBING — speak()
         # is killed below regardless.
         barge_event.set()
+        # Forcibly close any open HTTP connection to whisper-server / ollama
+        # so the worker thread's blocked iter_lines() / read() unblocks
+        # immediately. Without this the barge_event flag is set but the
+        # worker can stay parked on a socket read for tens of seconds.
+        cancel_inflight_http()
         stop_speaking()
         shared.set_state(State.IDLE)
         shared.extend_follow_up()
@@ -1290,6 +1358,7 @@ def _btn_cancel() -> None:
     if state in (State.SPEAKING, State.THINKING, State.TRANSCRIBING):
         print(f"[button] cancel pressed during {state.name}", file=sys.stderr)
         barge_event.set()
+        cancel_inflight_http()
         stop_speaking()
         shared.set_state(State.IDLE)
     else:
@@ -1915,15 +1984,16 @@ def main() -> None:
                 # is a "shut up and listen" signal.
                 if online_toggle_rect.collidepoint(event.pos):
                     shared.toggle_online()
-                elif shared.state in (State.SPEAKING, State.THINKING):
+                elif shared.state in (State.SPEAKING, State.THINKING, State.TRANSCRIBING):
                     print(
                         f"[tap] interrupt while {shared.state.name}",
                         file=sys.stderr,
                     )
+                    barge_event.set()
+                    cancel_inflight_http()
                     stop_speaking()
                     shared.set_state(State.IDLE)
                     shared.extend_follow_up()
-                    _drain_queue()
 
         snap = shared.snapshot()
 
