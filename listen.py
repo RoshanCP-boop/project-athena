@@ -10,7 +10,7 @@ Prereq: whisper-server must be running, e.g.:
       --host 127.0.0.1 --port 8080 -t 3
 
 Env vars:
-  SAGE_LLM_TIER=high|low   pick LLM (default high = phi3.5)
+  JARVIS_LLM_TIER=high|low   pick LLM (default high = phi3.5)
 
 Press Ctrl+C to exit.
 """
@@ -54,10 +54,10 @@ MIN_UTTERANCE_FRAMES = MIN_UTTERANCE_MS // FRAME_MS
 MAX_UTTERANCE_FRAMES = MAX_UTTERANCE_MS // FRAME_MS
 MIN_VOICED_FRAMES = MIN_VOICED_MS // FRAME_MS
 
-WAKE_WORDS = ("sage", "hey sage", "hi sage", "ok sage", "okay sage")
+WAKE_WORDS = ("jarvis", "hey jarvis", "hi jarvis", "ok jarvis", "okay jarvis")
 WAKE_RE = re.compile(
     r"^[\s,.!?:;\-—]*"
-    r"(?:hey\s+|hi\s+|okay\s+|ok\s+)?sage"
+    r"(?:hey\s+|hi\s+|okay\s+|ok\s+)?jarvis"
     r"(?=$|[\s,.!?:;\-—])",
     re.IGNORECASE,
 )
@@ -95,14 +95,14 @@ LLM_TIERS = {
     "high": "phi3.5",
     "low":  "qwen2.5:1.5b",
 }
-LLM_TIER = os.environ.get("SAGE_LLM_TIER", "high").strip().lower()
+LLM_TIER = os.environ.get("JARVIS_LLM_TIER", "high").strip().lower()
 if LLM_TIER not in LLM_TIERS:
-    print(f"[warn] unknown SAGE_LLM_TIER={LLM_TIER!r}, using 'high'", file=sys.stderr)
+    print(f"[warn] unknown JARVIS_LLM_TIER={LLM_TIER!r}, using 'high'", file=sys.stderr)
     LLM_TIER = "high"
 OLLAMA_MODEL = LLM_TIERS[LLM_TIER]
 
 SYSTEM_PROMPT = (
-    "You are Sage, a friendly voice assistant running on a Raspberry Pi. "
+    "You are Jarvis, a friendly voice assistant running on a Raspberry Pi. "
     "The user's messages come from speech-to-text and may contain small "
     "transcription errors (wrong homophones, missing words, mangled names). "
     "Infer the user's likely intent charitably. If a message seems nonsensical "
@@ -113,7 +113,7 @@ SYSTEM_PROMPT = (
 )
 HISTORY_MAX_TURNS = 4
 
-WHISPER_BASE_PROMPT = "A conversation with Sage, an AI assistant."
+WHISPER_BASE_PROMPT = "A conversation with Jarvis, an AI assistant."
 WHISPER_PROMPT_MAX_CHARS = 200
 
 audio_q: "queue.Queue[np.ndarray]" = queue.Queue()
@@ -164,7 +164,7 @@ def samples_to_wav_bytes(samples: np.ndarray, sample_rate: int = VAD_RATE) -> by
 def build_whisper_prompt() -> str:
     parts = [WHISPER_BASE_PROMPT]
     for msg in history[-2:]:
-        role = "User" if msg["role"] == "user" else "Sage"
+        role = "User" if msg["role"] == "user" else "Jarvis"
         parts.append(f"{role}: {msg['content']}")
     prompt = " ".join(parts)
     if len(prompt) > WHISPER_PROMPT_MAX_CHARS:
@@ -241,7 +241,7 @@ def processing_loop() -> None:
     in_speech = False
 
     print(f"[llm] tier={LLM_TIER} model={OLLAMA_MODEL}")
-    print("Listening. Say \u201cSage, ...\u201d to wake me up.\n")
+    print("Listening. Say \u201cJarvis, ...\u201d to wake me up.\n")
 
     while True:
         frame = audio_q.get()
@@ -327,13 +327,13 @@ def _handle_utterance(
     print(f"You ({duration_ms/1000:.1f}s, stt {dt:.1f}s): {text}")
 
     if not query:
-        print("Sage: Yes?\n")
+        print("Jarvis: Yes?\n")
         return time.monotonic() + FOLLOW_UP_WINDOW_SECS
 
     t1 = time.time()
     reply = ask_ollama(query)
     dt_llm = time.time() - t1
-    print(f"Sage ({dt_llm:.1f}s llm): {reply}\n")
+    print(f"Jarvis ({dt_llm:.1f}s llm): {reply}\n")
     return time.monotonic() + FOLLOW_UP_WINDOW_SECS
 
 

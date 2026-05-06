@@ -1,8 +1,8 @@
 """
-SQLite-backed long-term memory for Sage.
+SQLite-backed long-term memory for Jarvis.
 
 Three concepts:
-  - facts: short pieces of information the user explicitly told Sage to
+  - facts: short pieces of information the user explicitly told Jarvis to
     remember ("my dog's name is Bella"). Always injected into the system
     prompt, so the LLM treats them as persistent context.
   - conversations: one row per session. Holds optional one-line summary

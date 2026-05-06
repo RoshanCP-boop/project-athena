@@ -1,5 +1,5 @@
 """
-Sage — pygame UI for the voice assistant.
+Jarvis — pygame UI for the voice assistant.
 
 Local-first pipeline (default):
   mic -> openWakeWord (wake) -> VAD -> whisper.cpp -> Ollama -> Piper TTS
@@ -12,7 +12,7 @@ Optional online "deep think" mode (tap the toggle pill, or press 'O'):
       -> Groq Orpheus                 (TTS)
 
 Both modes pipe audio out through `aplay`, so any working ALSA device
-(USB sound card, BT speaker, HDMI audio) plays Sage's voice.
+(USB sound card, BT speaker, HDMI audio) plays Jarvis's voice.
 
 Online mode is opt-in: it requires a GROQ_API_KEY in ~/sage/.env and an
 explicit toggle. The UI palette shifts to amber + a "● ONLINE" badge
@@ -31,18 +31,18 @@ Prereqs:
   - DISPLAY env set (e.g. DISPLAY=:0 when launched via SSH)
   - ~/sage/.env present (only required for online mode — see .env.example)
 
-Wake word: "Hey Jarvis" (until we train a custom "Sage" model).
+Wake word: "Hey Jarvis" (bundled openWakeWord model — no training required).
 
 Controls:
   ESC  -> quit
   O    -> toggle online / deep-think mode (Groq)
 
 Env vars (set in ~/sage/.env or shell):
-  SAGE_LLM_TIER=high|low      pick LLM (default high = qwen2.5:1.5b)
-  SAGE_WAKE_THRESHOLD=0.5     openWakeWord confidence threshold
-  SAGE_WAKE_MODEL=hey_jarvis  switch to a different pretrained model
+  JARVIS_LLM_TIER=high|low      pick LLM (default high = qwen2.5:1.5b)
+  JARVIS_WAKE_THRESHOLD=0.5     openWakeWord confidence threshold
+  JARVIS_WAKE_MODEL=hey_jarvis  switch to a different pretrained model
                               (or path to a custom .onnx/.tflite file)
-  SAGE_WINDOWED=1             run windowed instead of fullscreen
+  JARVIS_WINDOWED=1             run windowed instead of fullscreen
   GROQ_API_KEY=...            enables online mode (required if you toggle it)
   GROQ_MODEL=...              override the Groq model
 """
@@ -98,7 +98,7 @@ VAD_AGGRESSIVENESS = 2                   # was 3; 2 is more permissive at low vo
 RMS_GATE = 0.015                         # was 0.022; lowered further for soft voices
 PREROLL_FRAMES = 300 // FRAME_MS
 END_SILENCE_FRAMES = 750 // FRAME_MS
-MIN_UTTERANCE_FRAMES = 300 // FRAME_MS   # so a quick "Sage" survives
+MIN_UTTERANCE_FRAMES = 300 // FRAME_MS   # so a quick "Jarvis" survives
 MIN_VOICED_FRAMES = 180 // FRAME_MS      # single-syllable wake words are ~200ms
 MIN_AVG_RMS = 0.012                      # was 0.016; soft speakers
 MAX_UTTERANCE_FRAMES = 15000 // FRAME_MS
@@ -109,24 +109,26 @@ FOLLOW_UP_WINDOW_SECS = 15.0
 # Pretrained model name from the openwakeword bundle. Built-ins:
 #   alexa, hey_jarvis, hey_mycroft, timer, weather
 # Or supply an absolute path to a custom .onnx / .tflite file (Path B).
-WAKE_MODEL_NAME = os.environ.get("SAGE_WAKE_MODEL", "hey_jarvis")
-WAKE_THRESHOLD = float(os.environ.get("SAGE_WAKE_THRESHOLD", "0.5"))
+WAKE_MODEL_NAME = os.environ.get("JARVIS_WAKE_MODEL", "hey_jarvis")
+WAKE_THRESHOLD = float(os.environ.get("JARVIS_WAKE_THRESHOLD", "0.5"))
 # Any score above this floor — even if it doesn't trigger — is logged so
-# you can see how close the wake word is getting and tune SAGE_WAKE_THRESHOLD
+# you can see how close the wake word is getting and tune JARVIS_WAKE_THRESHOLD
 # (or your pronunciation, mic distance, etc.) accordingly. Set very high
 # (e.g. 0.99) to silence the diagnostic.
-WAKE_DIAG_FLOOR = float(os.environ.get("SAGE_WAKE_DIAG_FLOOR", "0.20"))
+WAKE_DIAG_FLOOR = float(os.environ.get("JARVIS_WAKE_DIAG_FLOOR", "0.20"))
 # Cooldown between accepted wake-word triggers — prevents the model from
 # re-firing on the second syllable of the same phrase.
 WAKE_REFRACTORY_SECS = 1.5
 
 # Backup regex matcher for the rare case the user explicitly says the word
-# "Sage" inside a transcribed query. Lets us strip it cleanly so the LLM
+# "Jarvis" inside a transcribed query. Lets us strip it cleanly so the LLM
 # doesn't see the trigger as part of the question.
+# Whisper often hears the trigger as "jarvis", "jervis", "javis", etc.
+# Anything in this set is treated as the wake word for prefix-stripping.
 WAKE_WORD_VARIANTS = {
-    "sage", "sayge", "saje", "sayj",
-    "jarvis", "jarviss",
-    "page", "phage", "paige",
+    "jarvis", "jarviss", "jervis", "jervice",
+    "javis", "javice", "jarvice",
+    "harvis", "garvis",
 }
 WAKE_WORD_MAX_PREFIX_WORDS = 4
 
@@ -157,15 +159,15 @@ LLM_TIERS = {
     "high": "qwen2.5:1.5b",   # ~1.5B, good balance — default daily driver
     "low":  "qwen2.5:0.5b",   # ~0.5B, very fast — battery-saver tier
 }
-LLM_TIER = os.environ.get("SAGE_LLM_TIER", "high").strip().lower()
+LLM_TIER = os.environ.get("JARVIS_LLM_TIER", "high").strip().lower()
 if LLM_TIER not in LLM_TIERS:
-    print(f"[warn] unknown SAGE_LLM_TIER={LLM_TIER!r}, using 'high'", file=sys.stderr)
+    print(f"[warn] unknown JARVIS_LLM_TIER={LLM_TIER!r}, using 'high'", file=sys.stderr)
     LLM_TIER = "high"
 OLLAMA_MODEL = LLM_TIERS[LLM_TIER]
 print(f"[llm] tier={LLM_TIER} model={OLLAMA_MODEL}", file=sys.stderr)
 
 SYSTEM_PROMPT_TEMPLATE = (
-    "You are Sage, a friendly voice assistant running on a Raspberry Pi. "
+    "You are Jarvis, a friendly voice assistant running on a Raspberry Pi. "
     "{facts_block}"
     "{summaries_block}"
     "You have tools available: get_time (for any time/date question, "
@@ -207,10 +209,10 @@ def build_system_prompt() -> str:
 #
 # However, a static prompt loaded with the assistant's command vocabulary
 # is great for accuracy: Whisper's beam search is biased toward words it
-# sees in `initial_prompt`. We list the things Sage actually does so soft
+# sees in `initial_prompt`. We list the things Jarvis actually does so soft
 # words like "wave" stop being decoded as "leave" / "weave" / etc.
 WHISPER_BASE_PROMPT = (
-    "Hey Sage. Voice command for the Sage assistant. Common verbs: "
+    "Hey Jarvis. Voice command for the Jarvis assistant. Common verbs: "
     "wave, nod, shake, dance, look, sweep, blink, pulse, set, stop, "
     "remember, forget, calculate, time, weather. Common targets and "
     "modifiers: head, ring, light, red, blue, green, white, amber, "
@@ -333,7 +335,7 @@ audio_q: "queue.Queue[np.ndarray]" = queue.Queue()
 # recent half-second of audio, so on overflow we drop the OLDEST frame
 # and keep going. (See _push_drop_oldest below.)
 wake_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=15)
-# Set by wake_listener_loop when the user says the wake word while Sage
+# Set by wake_listener_loop when the user says the wake word while Jarvis
 # is mid-reply. _handle_complete_utterance checks this between blocking
 # calls (transcribe -> ask_ollama -> speak) and bails out so we don't
 # speak a reply the user has already abandoned.
@@ -373,7 +375,7 @@ def strip_wake_word(text: str) -> str | None:
     """
     Look for the wake word (or a common Whisper mishearing of it) anywhere
     in the first few words of the transcript. Allows natural phrasings like
-    "Hello Sage", "Hey Sage", as well as mishears like "Hello Phage" or
+    "Hello Jarvis", "Hey Jarvis", as well as mishears like "Hello Phage" or
     "Hey Page" that Whisper produces under noise.
 
     Returns None if no wake word found, "" if only the wake word was said,
@@ -521,7 +523,7 @@ def _chat(messages: list[dict]) -> tuple[dict, str]:
 
     Returns (message, backend_label). The label is "groq" or "ollama" — used
     only for diagnostic printing. On Groq failure we fall back to Ollama
-    automatically so a flaky network never breaks Sage.
+    automatically so a flaky network never breaks Jarvis.
     """
     if shared.is_online() and cloud.is_available():
         try:
@@ -614,7 +616,7 @@ def _play_wav_blocking(wav_bytes: bytes) -> None:
     aplay reads the WAV header and figures out sample rate / format on
     its own, so we just dump bytes. It runs as a separate process so it
     doesn't share PortAudio state with our input stream — that keeps mic
-    capture stable while Sage is talking.
+    capture stable while Jarvis is talking.
     """
     global _aplay_proc
     with _speak_lock:
@@ -751,7 +753,7 @@ def speak(text: str) -> None:
       Otherwise -> Piper local, which handles long text natively.
 
     State is set to SPEAKING for the duration; audio_callback drops
-    incoming mic frames in this state so Sage doesn't hear itself talk
+    incoming mic frames in this state so Jarvis doesn't hear itself talk
     and feedback-loop into a wake event.
     """
     text = (text or "").strip()
@@ -801,13 +803,13 @@ def _ensure_conversation() -> int:
         return _current_conv_id
 
 
-def record_turn(user_text: str, sage_reply: str) -> None:
+def record_turn(user_text: str, jarvis_reply: str) -> None:
     """Persist one user→assistant exchange to memory.db and bump the timer."""
     global _last_turn_at
     try:
         conv_id = _ensure_conversation()
         memory.add_message(conv_id, "user", user_text)
-        memory.add_message(conv_id, "assistant", sage_reply)
+        memory.add_message(conv_id, "assistant", jarvis_reply)
     except Exception:
         traceback.print_exc()
     with _conv_lock:
@@ -831,7 +833,7 @@ def _summarize_messages(msgs: list[dict]) -> str:
         if m.get("content")
     )
     prompt = (
-        "Summarize this brief conversation between a user and Sage in one "
+        "Summarize this brief conversation between a user and Jarvis in one "
         "sentence (max 25 words), written in third person. Focus on what "
         "the user wanted, learned, or decided. If the exchange was trivial "
         "(e.g. just a greeting, time check, or one-off math), reply with "
@@ -935,12 +937,12 @@ def audio_callback(indata, frames, time_info, status) -> None:
     #     when those calls return.
     #   wake_q   (consumed by the dedicated wake_listener_loop thread):
     #     pushed ALWAYS. That thread is what catches barge-in (a wake-word
-    #     hit while Sage is mid-reply) — the worker thread can't react during
+    #     hit while Jarvis is mid-reply) — the worker thread can't react during
     #     those phases because it's blocked. Bounded + drop-oldest so it
     #     never grows under CPU pressure.
-    # Note: barge-in via wake word is only reliable when Sage's voice is on
-    # earphones (or a quiet speaker). Open speakers can feed Sage's TTS back
-    # into the mic — bump SAGE_WAKE_THRESHOLD if you get false barge-ins.
+    # Note: barge-in via wake word is only reliable when Jarvis's voice is on
+    # earphones (or a quiet speaker). Open speakers can feed Jarvis's TTS back
+    # into the mic — bump JARVIS_WAKE_THRESHOLD if you get false barge-ins.
     state = shared.state
     frame = mono_16k.copy()
     if state in (State.IDLE, State.LISTENING):
@@ -1015,11 +1017,11 @@ def _log_wake_score(score: float, source: str) -> None:
     """Throttled near-miss logger for the wake-word detector.
 
     Anything above WAKE_DIAG_FLOOR — even sub-threshold — gets surfaced
-    so you can see how close 'hey sage' is to firing. We report the
+    so you can see how close 'hey jarvis' is to firing. We report the
     high-water mark over each ~500ms window so the log stays readable
     even when the model is firing predict() ~33 times per second.
 
-    Use this to tune SAGE_WAKE_THRESHOLD: if you consistently see
+    Use this to tune JARVIS_WAKE_THRESHOLD: if you consistently see
     'miss peak=0.42' when you say the wake word, drop the threshold to
     around 0.35. If you see no scores at all, the mic isn't picking
     you up — try speaking louder or closer.
@@ -1068,10 +1070,10 @@ def wake_listener_loop() -> None:
 
     Lives on its own thread because the main worker (processing_loop) is
     blocked inside speak() / ask_ollama() / whisper transcribe whenever
-    Sage is mid-reply — exactly when the user wants to be able to
+    Jarvis is mid-reply — exactly when the user wants to be able to
     interrupt. This thread keeps openWakeWord fed at all times so the
     model sees continuous audio context, and acts on a hit only when
-    Sage is busy producing output:
+    Jarvis is busy producing output:
 
       SPEAKING     -> kill TTS via stop_speaking() (immediate audible stop)
       THINKING     -> set barge_event; the worker discards the LLM reply
@@ -1108,7 +1110,7 @@ def wake_listener_loop() -> None:
 
         state = shared.state
         if state not in (State.SPEAKING, State.THINKING, State.TRANSCRIBING):
-            # Not Sage's turn — IDLE / LISTENING wakes are the worker's job.
+            # Not Jarvis's turn — IDLE / LISTENING wakes are the worker's job.
             continue
 
         # Surface near-miss scores during busy phases too, so you can tell
@@ -1153,7 +1155,7 @@ def _processing_iteration() -> None:
         in_follow_up = shared.in_follow_up_window()
 
         # Race-safety: by the time we pop a frame, state may have flipped
-        # to a "Sage is busy" phase. Those frames are stale and barge-in
+        # to a "Jarvis is busy" phase. Those frames are stale and barge-in
         # is the wake_listener thread's job, not ours — just drop.
         if state in (State.SPEAKING, State.THINKING, State.TRANSCRIBING):
             continue
@@ -1177,7 +1179,7 @@ def _processing_iteration() -> None:
                     file=sys.stderr,
                 )
                 last_wake_at = now
-                shared.add_message("sage", "Yes?")
+                shared.add_message("jarvis", "Yes?")
                 shared.extend_follow_up()
                 # Drop everything still in flight and reset the wake model
                 # so the same audio frames can't double-trigger.
@@ -1272,7 +1274,7 @@ def _handle_complete_utterance(
 
     text = transcribe(audio)
 
-    # Barge-in check #1: user said "hey sage" while we were transcribing.
+    # Barge-in check #1: user said "hey jarvis" while we were transcribing.
     # Drop the result and let the new utterance reach us via the follow-up
     # window the wake_listener already opened.
     if barge_event.is_set():
@@ -1298,7 +1300,7 @@ def _handle_complete_utterance(
     shared.add_message("user", display_text)
 
     if not query:
-        shared.add_message("sage", "Yes?")
+        shared.add_message("jarvis", "Yes?")
         shared.extend_follow_up()
         return
 
@@ -1313,7 +1315,7 @@ def _handle_complete_utterance(
         print("[barge] suppressed reply (user interrupted)", file=sys.stderr)
         return
 
-    shared.add_message("sage", reply)
+    shared.add_message("jarvis", reply)
     record_turn(query, reply)
     speak(reply)
     shared.extend_follow_up()
@@ -1352,7 +1354,7 @@ STATE_LABEL = {
 }
 
 USER_LABEL_COLOR = (100, 180, 255)
-SAGE_LABEL_COLOR = (255, 180, 120)
+JARVIS_LABEL_COLOR = (255, 180, 120)
 
 ONLINE_BADGE_COLOR = (255, 170, 60)
 HINT_COLOR = (95, 100, 120)
@@ -1434,7 +1436,7 @@ def draw_conversation(
     for msg in reversed(messages):
         is_user = msg.role == "user"
         label_text = "YOU" if is_user else "SAGE"
-        label_color = USER_LABEL_COLOR if is_user else SAGE_LABEL_COLOR
+        label_color = USER_LABEL_COLOR if is_user else JARVIS_LABEL_COLOR
 
         body_lines = wrap_lines(msg.text, body_font, max_width)
 
@@ -1461,9 +1463,9 @@ def draw_conversation(
 
 def main() -> None:
     # Long-term memory: open the SQLite DB and wire timer notifications
-    # so a fired timer surfaces as a "sage" message in the UI.
+    # so a fired timer surfaces as a "jarvis" message in the UI.
     memory.init_db()
-    tools.set_timer_notifier(lambda msg: shared.add_message("sage", msg))
+    tools.set_timer_notifier(lambda msg: shared.add_message("jarvis", msg))
 
     if cloud.is_available():
         print(
@@ -1505,13 +1507,13 @@ def main() -> None:
     os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
     pygame.init()
     info = pygame.display.Info()
-    if os.environ.get("SAGE_WINDOWED"):
+    if os.environ.get("JARVIS_WINDOWED"):
         screen = pygame.display.set_mode((1280, 720))
     else:
         screen = pygame.display.set_mode(
             (info.current_w, info.current_h), pygame.FULLSCREEN
         )
-    pygame.display.set_caption("Sage")
+    pygame.display.set_caption("Jarvis")
     pygame.mouse.set_visible(False)
 
     w, h = screen.get_size()
@@ -1529,7 +1531,7 @@ def main() -> None:
         # PortAudio's callback never fires again. 500ms gives the audio
         # thread 5x more headroom to ride out an Ollama cold-load or a
         # piper synth spike.
-        latency = float(os.environ.get("SAGE_INPUT_LATENCY", "0.5"))
+        latency = float(os.environ.get("JARVIS_INPUT_LATENCY", "0.5"))
         s = sd.InputStream(
             device=MIC_INDEX,
             samplerate=CAPTURE_RATE,
@@ -1553,7 +1555,7 @@ def main() -> None:
     worker.start()
 
     # Always-on wake-word listener for barge-in. Runs on its own thread so
-    # it can interrupt Sage while the worker is blocked inside speak() or
+    # it can interrupt Jarvis while the worker is blocked inside speak() or
     # ask_ollama(). See wake_listener_loop docstring for the full story.
     wake_listener = threading.Thread(
         target=wake_listener_loop, daemon=True, name="wake-listener"
@@ -1586,7 +1588,7 @@ def main() -> None:
         firing under sustained CPU starvation or after some ALSA glitches.
         We saw it during the in-process whisper days. With whisper-server
         in a separate process this is rare, but the thread is cheap
-        insurance and the only way Sage recovers without a restart.
+        insurance and the only way Jarvis recovers without a restart.
         """
         global max_rms_since_heartbeat, frames_since_heartbeat, last_audio_time
         # Tighter cadence so a real stream death is caught in ~3 s rather
@@ -1598,8 +1600,8 @@ def main() -> None:
         # starvation while loading the model from NVMe into RAM) doesn't
         # falsely trip a stream recreation, but short enough that real
         # audio-stack hangs are still caught quickly. Override with
-        # SAGE_STREAM_DEAD_AFTER if you want different behavior.
-        STREAM_DEAD_AFTER = float(os.environ.get("SAGE_STREAM_DEAD_AFTER", "4.0"))
+        # JARVIS_STREAM_DEAD_AFTER if you want different behavior.
+        STREAM_DEAD_AFTER = float(os.environ.get("JARVIS_STREAM_DEAD_AFTER", "4.0"))
         last_print = 0.0
         while True:
             time.sleep(CHECK_INTERVAL)
@@ -1692,7 +1694,7 @@ def main() -> None:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 # On a touchscreen, taps come through as mouse-button
                 # events. The online-mode pill takes priority; a tap
-                # anywhere else while Sage is mid-speech (or thinking)
+                # anywhere else while Jarvis is mid-speech (or thinking)
                 # is a "shut up and listen" signal.
                 if online_toggle_rect.collidepoint(event.pos):
                     shared.toggle_online()

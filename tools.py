@@ -1,5 +1,5 @@
 """
-Tool definitions for Sage's LLM.
+Tool definitions for Jarvis's LLM.
 
 Each tool is a Python function plus a JSON Schema describing its parameters
 in OpenAI/Ollama function-calling format. The LLM decides when to call a
@@ -532,8 +532,8 @@ OLLAMA_TOOL_SCHEMAS = [
             "name": "remember",
             "description": (
                 "Save a fact to long-term memory. Call this when the user "
-                "explicitly asks Sage to remember something, or shares a "
-                "personal detail Sage should retain across conversations "
+                "explicitly asks Jarvis to remember something, or shares a "
+                "personal detail Jarvis should retain across conversations "
                 "(e.g. their name, preferences, important dates)."
             ),
             "parameters": {
@@ -558,7 +558,7 @@ OLLAMA_TOOL_SCHEMAS = [
             "name": "forget",
             "description": (
                 "Remove facts from long-term memory. Call this when the "
-                "user asks Sage to forget something."
+                "user asks Jarvis to forget something."
             ),
             "parameters": {
                 "type": "object",
@@ -583,7 +583,7 @@ OLLAMA_TOOL_SCHEMAS = [
         "function": {
             "name": "servo_set_angle",
             "description": (
-                "Point Sage's head at a specific angle. 0 is straight "
+                "Point Jarvis's head at a specific angle. 0 is straight "
                 "ahead, negative angles look one way, positive the other. "
                 "Useful for 'look left', 'look right', 'face me'."
             ),
@@ -685,7 +685,7 @@ OLLAMA_TOOL_SCHEMAS = [
             "name": "servo_wave",
             "description": (
                 "Friendly hello sweep. Use when the user says hello, "
-                "asks Sage to wave, or wants a greeting."
+                "asks Jarvis to wave, or wants a greeting."
             ),
             "parameters": {
                 "type": "object",

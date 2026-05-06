@@ -1,4 +1,4 @@
-# Sage — Handheld Local-First AI Assistant
+# Jarvis — Handheld Local-First AI Assistant
 
 A privacy-focused voice assistant running on a Raspberry Pi 5 with optional
 cloud "deep-think" mode using groq.
@@ -11,7 +11,7 @@ cloud "deep-think" mode using groq.
 - **Text-to-speech** via local [Piper](https://github.com/rhasspy/piper) (`en_US-ryan-medium`), or Groq's Orpheus in online mode
 - **Tool calling** for time, calculator, timers, long-term memory, and physical hardware (servo gestures, LED ring once wired)
 - **Long-term memory** in a local SQLite database, with auto-summarized conversation history
-- **Barge-in interruption** — say "hey jarvis" or tap the screen mid-reply to cut Sage off
+- **Barge-in interruption** — say "hey jarvis" or tap the screen mid-reply to cut Jarvis off
 - **pygame UI** that runs on the attached touchscreen
 
 ## Hardware

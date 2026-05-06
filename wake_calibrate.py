@@ -3,17 +3,17 @@ Wake-word threshold calibration helper.
 
 Standalone tool that loads the same openWakeWord model app.py uses,
 listens to the mic, and prints the peak score every 500ms. Use it to
-figure out the right value for SAGE_WAKE_THRESHOLD in your .env.
+figure out the right value for JARVIS_WAKE_THRESHOLD in your .env.
 
 Procedure:
   1. Run the app: `python wake_calibrate.py`
-     (uses SAGE_WAKE_MODEL from .env, or pass --model /path/to.onnx)
+     (uses JARVIS_WAKE_MODEL from .env, or pass --model /path/to.onnx)
   2. Stay silent for 5 seconds. Note the peak — call it `noise_floor`.
      If it's above ~0.05 your room is noisy / mic is hot.
-  3. Say "hey sage" 8-10 times, varying volume and distance the way
-     you'd actually use it. Note the *lowest* score that "hey sage"
+  3. Say "hey jarvis" 8-10 times, varying volume and distance the way
+     you'd actually use it. Note the *lowest* score that "hey jarvis"
      produces — call it `min_hit`.
-  4. Set SAGE_WAKE_THRESHOLD halfway between noise_floor and min_hit
+  4. Set JARVIS_WAKE_THRESHOLD halfway between noise_floor and min_hit
      (and at least 0.05 below min_hit). Restart app.py.
 
 Examples (mine):
@@ -24,7 +24,7 @@ Examples (mine):
 Tips for better wake detection:
   - Distance: 30-60 cm is the sweet spot; closer can clip, farther
     drops too much signal.
-  - Cadence: say "hey sage" as one phrase ("HEY-sage"), not two
+  - Cadence: say "hey jarvis" as one phrase ("HEY-jarvis"), not two
     separate words with a pause. Short, crisp.
   - Custom-model trick: most colab-trained models match best at the
     cadence the training audio was recorded at. If yours sounds clipped
@@ -50,7 +50,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
-        default=os.environ.get("SAGE_WAKE_MODEL", "hey_jarvis"),
+        default=os.environ.get("JARVIS_WAKE_MODEL", "hey_jarvis"),
         help="openWakeWord built-in name OR absolute path to a .onnx/.tflite file.",
     )
     parser.add_argument(
@@ -125,7 +125,7 @@ def main() -> None:
             state["session_high"] = score
 
     print(
-        "\n[calibrate] Speak 'hey sage' a few times. Press Ctrl-C to "
+        "\n[calibrate] Speak 'hey jarvis' a few times. Press Ctrl-C to "
         "see the summary.\n",
         file=sys.stderr,
     )
@@ -157,7 +157,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             print(
-                "[calibrate] suggested SAGE_WAKE_THRESHOLD: "
+                "[calibrate] suggested JARVIS_WAKE_THRESHOLD: "
                 f"{max(0.10, state['session_high'] - 0.10):.2f}  "
                 "(0.10 below your peak)",
                 file=sys.stderr,

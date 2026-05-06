@@ -1,5 +1,5 @@
 """
-Hardware singletons for Sage (servo + LED ring).
+Hardware singletons for Jarvis (servo + LED ring).
 
 Two devices, both wired to fixed Pi resources (servo on PWM chip 0
 channel 2 / GPIO 18, LED ring on SPI MOSI / GPIO 10 once the part

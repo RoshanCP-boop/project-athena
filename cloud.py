@@ -1,5 +1,5 @@
 """
-Cloud adapter for Sage's "deep think" / online mode.
+Cloud adapter for Jarvis's "deep think" / online mode.
 
 Three Groq endpoints, all OpenAI-compatible:
   - chat()        -> /openai/v1/chat/completions   (LLM, llama-3.3-70b)
