@@ -176,9 +176,16 @@ SYSTEM_PROMPT_TEMPLATE = (
     "including other cities), calculator (for any math), set_timer (when "
     "the user wants a timer or reminder), remember (when the user asks "
     "you to remember something or shares a personal detail worth keeping), "
-    "and forget (when they ask you to forget something). Use them "
+    "forget (when they ask you to forget something), and a set of "
+    "physical-hardware tools for the servo head and LED ring. Use them "
     "naturally — don't announce that you're using a tool, just give the "
     "answer afterward. "
+    "For multi-step physical actions ('wave then look right', 'cycle the "
+    "LED red green blue for 3 seconds each', 'nod three times then dance'), "
+    "call run_sequence ONCE with all the steps as an array, instead of "
+    "calling individual tools in series — it's faster and the user sees "
+    "one smooth sequence rather than stuttering. For a single action "
+    "('wave', 'look left', 'turn the LED off'), prefer the dedicated tool. "
     "The user's messages come from speech-to-text and may contain small "
     "transcription errors (wrong homophones, missing words, inserted "
     "filler words). Infer their likely intent charitably and ignore "
@@ -1260,6 +1267,12 @@ def wake_listener_loop() -> None:
         # immediately. Without this the barge_event flag is set but the
         # worker can stay parked on a socket read for tens of seconds.
         cancel_inflight_http()
+        # Also kill any in-flight run_sequence playback so 'hey jarvis stop'
+        # halts a long LED-blinking / servo-dancing routine, not just TTS.
+        try:
+            tools.cancel_sequence()
+        except Exception:
+            pass
         stop_speaking()
         shared.set_state(State.IDLE)
         shared.extend_follow_up()
@@ -1359,9 +1372,20 @@ def _btn_cancel() -> None:
         print(f"[button] cancel pressed during {state.name}", file=sys.stderr)
         barge_event.set()
         cancel_inflight_http()
+        try:
+            tools.cancel_sequence()
+        except Exception:
+            pass
         stop_speaking()
         shared.set_state(State.IDLE)
     else:
+        # Also stop any in-flight sequence on idle-cancel — useful escape
+        # hatch if the LLM kicked off a 30s dance routine and the user
+        # wants out without saying "hey jarvis".
+        try:
+            tools.cancel_sequence()
+        except Exception:
+            pass
         # In IDLE/LISTENING the cancel button just centers the servo and
         # clears any leftover follow-up window — useful as a "reset".
         print("[button] cancel pressed (idle reset)", file=sys.stderr)
@@ -1991,6 +2015,10 @@ def main() -> None:
                     )
                     barge_event.set()
                     cancel_inflight_http()
+                    try:
+                        tools.cancel_sequence()
+                    except Exception:
+                        pass
                     stop_speaking()
                     shared.set_state(State.IDLE)
                     shared.extend_follow_up()

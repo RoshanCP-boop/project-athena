@@ -37,6 +37,7 @@ import math
 import operator as op
 import sys
 import threading
+import time
 from datetime import datetime as dt
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -425,6 +426,261 @@ def led_off() -> str:
     return hardware.get_leds().off()
 
 
+# ---------- run_sequence: structured multi-step DSL ------------------------
+# A meta-tool that lets the LLM compose multi-step hardware behaviours
+# ("wave, wait 1 second, then look right") without us having to invent a
+# new bespoke tool for every combination. Each `step` is a typed dict with
+# an `action` field; unknown actions are rejected so the LLM can never run
+# arbitrary code.
+#
+# Why not just have the LLM chain individual tool calls? It can — and it
+# does for two-step things — but each chained tool call is one round-trip
+# to the LLM (tokens + latency). A 6-step "police siren" sequence emitted
+# as a single run_sequence call is one round-trip; the same as six chained
+# tool calls is six round-trips and ~10x slower.
+
+# Total steps per call (with nested repeats expanded). Guards against the
+# LLM emitting a 1000-step sequence that takes 30 minutes to play out.
+_SEQUENCE_MAX_STEPS = 50
+_SEQUENCE_MAX_REPEAT_DEPTH = 3
+_SEQUENCE_MAX_WAIT_S = 60.0
+
+_seq_lock = threading.Lock()
+_seq_thread: Optional[threading.Thread] = None
+_seq_cancel = threading.Event()
+
+
+def _seq_sleep(seconds: float, cancel: threading.Event) -> None:
+    """Cancellable sleep — wakes every 50 ms to check the cancel flag."""
+    end = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0 or cancel.is_set():
+            return
+        time.sleep(min(0.05, remaining))
+
+
+def _seq_wait_for_servo(s, cancel: threading.Event) -> None:
+    """Block until the servo finishes its in-flight motion."""
+    while s.is_busy:
+        if cancel.is_set():
+            return
+        time.sleep(0.05)
+
+
+def _seq_count_steps(steps: list, depth: int = 0) -> int:
+    """Recursively count steps with repeats expanded.
+
+    Raises ValueError on too-deep nesting so the caller can reject before
+    even starting the worker thread.
+    """
+    if depth > _SEQUENCE_MAX_REPEAT_DEPTH:
+        raise ValueError(
+            f"repeat nesting too deep (max {_SEQUENCE_MAX_REPEAT_DEPTH})"
+        )
+    n = 0
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("action") == "repeat":
+            inner = step.get("steps") or []
+            times = max(1, min(10, int(step.get("times", 1))))
+            n += times * _seq_count_steps(inner, depth + 1)
+        else:
+            n += 1
+    return n
+
+
+def _seq_run_servo(s, action: str, params: dict, cancel: threading.Event) -> None:
+    """Dispatch a single servo step then block until the motion completes."""
+    if action == "servo_angle":
+        angle = max(-90.0, min(90.0, float(params.get("angle", 0))))
+        s.set_angle(angle)
+    elif action == "servo_gesture":
+        name = (params.get("name") or "").strip().lower()
+        if name == "nod":
+            s.nod(max(1, min(10, int(params.get("count", 2)))))
+        elif name == "shake":
+            s.shake(max(1, min(10, int(params.get("count", 3)))))
+        elif name == "wave":
+            s.wave(max(1, min(5, int(params.get("count", 1)))))
+        elif name == "dance":
+            s.dance(max(1.0, min(30.0, float(params.get("duration_s", 4)))))
+        elif name == "look_around":
+            s.look_around(max(1.0, min(20.0, float(params.get("duration_s", 4)))))
+        elif name == "twitch":
+            s.twitch()
+        elif name == "center":
+            s.center()
+        else:
+            return  # unknown gesture; silently skip rather than crash
+    _seq_wait_for_servo(s, cancel)
+
+
+def _seq_run_led(action: str, params: dict, cancel: threading.Event) -> None:
+    """Dispatch a single LED step. The ring is currently stubbed so these
+    return a friendly 'not connected' message — but the wait timing still
+    plays out so the sequence behaves correctly when the ring is wired.
+    """
+    leds = hardware.get_leds()
+    if action == "led_color":
+        leds.set_color(
+            str(params.get("color", "white")),
+            float(params.get("brightness", 0.5)),
+        )
+        _seq_sleep(
+            min(_SEQUENCE_MAX_WAIT_S, float(params.get("hold_s", 0))), cancel
+        )
+    elif action == "led_blink":
+        dur = min(_SEQUENCE_MAX_WAIT_S, float(params.get("duration_s", 5)))
+        leds.blink(
+            str(params.get("color", "white")),
+            float(params.get("rate_hz", 2)),
+            dur,
+        )
+        _seq_sleep(dur, cancel)
+    elif action == "led_pulse":
+        dur = min(_SEQUENCE_MAX_WAIT_S, float(params.get("duration_s", 5)))
+        leds.pulse(
+            str(params.get("color", "white")),
+            float(params.get("period_s", 2)),
+            dur,
+        )
+        _seq_sleep(dur, cancel)
+    elif action == "led_rainbow":
+        dur = min(_SEQUENCE_MAX_WAIT_S, float(params.get("duration_s", 5)))
+        leds.rainbow(dur)
+        _seq_sleep(dur, cancel)
+    elif action == "led_off":
+        leds.off()
+
+
+def _seq_execute(steps: list, cancel: threading.Event, depth: int = 0) -> None:
+    """Walk and execute the step list. Honours cooperative cancel."""
+    if depth > _SEQUENCE_MAX_REPEAT_DEPTH:
+        return
+    servo = hardware.get_servo()
+    for step in steps:
+        if cancel.is_set():
+            return
+        if not isinstance(step, dict):
+            continue
+        action = (step.get("action") or "").strip().lower()
+        if action in ("servo_angle", "servo_gesture"):
+            _seq_run_servo(servo, action, step, cancel)
+        elif action.startswith("led_"):
+            _seq_run_led(action, step, cancel)
+        elif action == "wait":
+            secs = max(0.0, min(_SEQUENCE_MAX_WAIT_S, float(step.get("seconds", 1))))
+            _seq_sleep(secs, cancel)
+        elif action == "repeat":
+            inner = step.get("steps") or []
+            times = max(1, min(10, int(step.get("times", 1))))
+            for _ in range(times):
+                if cancel.is_set():
+                    return
+                _seq_execute(inner, cancel, depth + 1)
+        # else: unknown action — silently skip. Validation already warned
+        # the LLM by reporting any unknown action names back as part of
+        # the tool's return string.
+
+
+def cancel_sequence() -> None:
+    """Cancel any in-flight run_sequence call. Idempotent.
+
+    Called by app.py from:
+      - wake_listener_loop on barge-in (so 'hey jarvis stop' kills a long
+        sequence as well as cutting off TTS)
+      - the physical cancel button
+      - the tap-to-cancel handler
+    """
+    _seq_cancel.set()
+    t = _seq_thread
+    if t is not None and t.is_alive():
+        t.join(timeout=1.0)
+
+
+def run_sequence(steps: Any = None) -> str:
+    """Run a multi-step hardware action sequence in the background.
+
+    Returns immediately with a confirmation; the actual playback runs on
+    a daemon thread so the LLM can speak its reply over the top. A new
+    call cancels any in-flight sequence (no piling up).
+    """
+    global _seq_thread
+
+    if not isinstance(steps, list) or not steps:
+        return "I need a non-empty list of steps."
+
+    # Reject obviously unknown actions up front so the LLM gets useful
+    # feedback rather than the steps silently being skipped.
+    known = {
+        "servo_angle", "servo_gesture",
+        "led_color", "led_blink", "led_pulse", "led_rainbow", "led_off",
+        "wait", "repeat",
+    }
+
+    def _walk(ss, depth=0):
+        if depth > _SEQUENCE_MAX_REPEAT_DEPTH:
+            raise ValueError(
+                f"repeat nesting too deep (max {_SEQUENCE_MAX_REPEAT_DEPTH})"
+            )
+        bad: list[str] = []
+        for s in ss:
+            if not isinstance(s, dict):
+                bad.append(str(type(s).__name__))
+                continue
+            a = (s.get("action") or "").strip().lower()
+            if a not in known:
+                bad.append(a or "<missing action>")
+            if a == "repeat":
+                bad.extend(_walk(s.get("steps") or [], depth + 1))
+        return bad
+
+    try:
+        bad = _walk(steps)
+    except ValueError as e:
+        return f"Sequence rejected: {e}."
+    if bad:
+        return (
+            f"Sequence rejected — unknown actions: {sorted(set(bad))}. "
+            f"Allowed: {sorted(known)}."
+        )
+
+    try:
+        total = _seq_count_steps(steps)
+    except ValueError as e:
+        return f"Sequence rejected: {e}."
+    if total > _SEQUENCE_MAX_STEPS:
+        return (
+            f"Sequence too long ({total} steps after expansion). "
+            f"Limit is {_SEQUENCE_MAX_STEPS}."
+        )
+    if total == 0:
+        return "Sequence has no executable steps."
+
+    # Cancel any in-flight sequence, then start the new one.
+    with _seq_lock:
+        _seq_cancel.set()
+        old = _seq_thread
+        if old is not None and old.is_alive():
+            old.join(timeout=1.5)
+        _seq_cancel.clear()
+        local_cancel = _seq_cancel  # closure captures the same Event obj
+
+        def _run() -> None:
+            try:
+                _seq_execute(steps, local_cancel)
+            except Exception as e:
+                print(f"[run_sequence] failed: {e}", file=sys.stderr)
+
+        t = threading.Thread(target=_run, daemon=True, name="run-sequence")
+        _seq_thread = t
+        t.start()
+
+    return f"Running {total}-step sequence."
+
+
 # ---------- registry & schemas ---------------------------------------------
 
 _REGISTRY: dict[str, Callable[..., str]] = {
@@ -447,6 +703,7 @@ _REGISTRY: dict[str, Callable[..., str]] = {
     "led_pulse":        led_pulse,
     "led_rainbow":      led_rainbow,
     "led_off":          led_off,
+    "run_sequence":     run_sequence,
 }
 
 OLLAMA_TOOL_SCHEMAS = [
@@ -844,6 +1101,54 @@ OLLAMA_TOOL_SCHEMAS = [
                 "wired."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+
+    # ---- run_sequence: composed multi-step actions ------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sequence",
+            "description": (
+                "Run a multi-step hardware action sequence in one shot. "
+                "Use this for compound requests like 'wave then look "
+                "right', 'cycle the LED red, green, blue for 3 seconds "
+                "each', or 'nod three times then dance'. For a SINGLE "
+                "action prefer the dedicated tool (servo_wave, "
+                "servo_set_angle, led_blink, etc.) — run_sequence is for "
+                "two or more steps that need to happen in order. "
+                "Each step blocks until it completes before the next "
+                "starts, so you don't need to add manual waits between "
+                "physical motions. The sequence runs in the background; "
+                "this tool returns immediately and you can speak your "
+                "reply to the user over the top."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": (
+                            "Ordered list of steps. Each step is an object "
+                            "with an 'action' field plus action-specific "
+                            "params. Allowed actions:\n"
+                            "  servo_angle    {angle: -90..90}\n"
+                            "  servo_gesture  {name: 'nod'|'shake'|'wave'|"
+                            "'dance'|'look_around'|'twitch'|'center', "
+                            "count?, duration_s?}\n"
+                            "  led_color      {color, brightness?, hold_s}\n"
+                            "  led_blink      {color, rate_hz?, duration_s}\n"
+                            "  led_pulse      {color, period_s?, duration_s}\n"
+                            "  led_rainbow    {duration_s}\n"
+                            "  led_off        {}\n"
+                            "  wait           {seconds: 0..60}\n"
+                            "  repeat         {times: 1..10, steps: [...]}"
+                        ),
+                        "items": {"type": "object"},
+                    }
+                },
+                "required": ["steps"],
+            },
         },
     },
 ]
