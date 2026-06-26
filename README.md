@@ -1,17 +1,17 @@
-# Jarvis — Handheld Local-First AI Assistant
+# Athena — Handheld Local-First AI Assistant
 
 A privacy-focused voice assistant running on a Raspberry Pi 5 with optional
 cloud "deep-think" mode using groq.
 
 ## What it does
 
-- **Wake-word detection** ("hey jarvis") via [openWakeWord](https://github.com/dscripka/openWakeWord)
+- **Wake-word detection** ("hey Athena") via [openWakeWord](https://github.com/dscripka/openWakeWord)
 - **Speech-to-text** via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) running as a local HTTP server, or Groq's `whisper-large-v3-turbo` in online mode
 - **LLM inference** via local [Ollama](https://ollama.ai) (`qwen2.5:1.5b` by default), or Groq's `llama-3.3-70b-versatile` in online mode
 - **Text-to-speech** via local [Piper](https://github.com/rhasspy/piper) (`en_US-ryan-medium`), or Groq's Orpheus in online mode
 - **Tool calling** for time, calculator, timers, long-term memory, and physical hardware (servo gestures, LED ring once wired)
 - **Long-term memory** in a local SQLite database, with auto-summarized conversation history
-- **Barge-in interruption** — say "hey jarvis" or tap the screen mid-reply to cut Jarvis off
+- **Barge-in interruption** — say "hey Athena" or tap the screen mid-reply to cut Athena off
 - **pygame UI** that runs on the attached touchscreen
 
 ## Hardware
